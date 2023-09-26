@@ -1,5 +1,13 @@
-import VizzuController from "./vizzu-controller.js";
+"use strict";
+//import VizzuController from "./vizzu-controller.js";
+//import type Vizzu from 'vizzu'
 import AnimationQueue from "./AnimationQueue.js";
+import { AnimationParameters } from './AnimationQueue.js';
+
+import type Vizzu from "vizzu";
+import type {Config, Data, Styles, Anim} from "vizzu";
+
+//type VizzuType = typeof vizzuType;
 
 const LOG_PREFIX = [
   "%cVIZZU%cPLAYER",
@@ -7,29 +15,83 @@ const LOG_PREFIX = [
   "background: #3a60bf; color: #e2ae30;",
 ];
 
-let Vizzu;
+interface Phase {
+  config?: Config.Chart;
+  filter?: Data.FilterCallback | null;
+  style?: Styles.Chart;
+  data?: Data.Set;
+  animOptions?: Anim.Options;
+}
+
+/** Slide consists of a single or multiple phase. Controls will navigate
+ *  between slides. */
+type Slide = Phase | Phase[];
+
+/** Story configuration object represents the whole presentation containing
+ *  the underlying data and the slides. */
+interface Story {
+  /** Data, copied into the initializer slide (if not present). */
+  data?: Data.Set;
+  /** Initial style, copied into the initializer slide (if not present). */
+  style?: Styles.Chart;
+  /** The sequence of the presentation's slides. */
+  slides: Slide[];
+}
+
+type animData = {
+  config?: Config.Chart;
+  style?: Styles.Chart;
+  data?: Data.Set | { filter: Data.FilterCallback } | undefined;
+  options?: Anim.Options;
+  filter?: Data.FilterCallback;
+};
+type animTargetData = {
+  target: animData;
+  options?: Anim.Options;
+}
+
+
+let VizzuElement:any;
 
 class VizzuPlayer extends HTMLElement {
+  shadowRoot!: ShadowRoot;
+  initializing: Promise<boolean> | null = null;
+  loading: Boolean = true;
+  _slides: any;
+  _currentSlide: number = 0;
+  _originalSlides: any;
+  _seekPosition: any;
+  _animationQueue: any;
+
+  vizzu: Vizzu | null = null;
+  player: VizzuPlayer | null = null;
+  direction: string = "normal";
+  lastAnimation: AnimationParameters | null = null;
+
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
     this.shadowRoot.innerHTML = this._render();
 
-    this._resolveVizzu = null;
-    this.initializing = new Promise((resolve) => {
-      this._resolveVizzu = resolve;
-    }).then(() => this.vizzu.initializing);
 
-    this._resolvePlayer = null;
+/*     this._resolvePlayer = null;
     this.ready = new Promise((resolve) => {
       this._resolvePlayer = resolve;
-    });
+    }); */
   }
-
+  
   async connectedCallback() {
+    let resolveInit: ((value: boolean | PromiseLike<boolean>) => void) | null = null;
+    
+    this.initializing = new Promise<boolean>((resolve) => {
+      resolveInit = resolve;
+    });
+
     await this._initVizzu();
+    await this.vizzu?.initializing;
+    resolveInit!(true);
     if (!this.hasAttribute("tabindex")) {
-      this.setAttribute("tabindex", 0);
+      this.setAttribute("tabindex", "0");
       this.tabIndex = 0;
     }
 
@@ -43,33 +105,33 @@ class VizzuPlayer extends HTMLElement {
     });
   }
 
-  get debug() {
+  get debug(): boolean {
     try {
       const debugCookie = document.cookie
         .split(";")
         .some((c) => c.startsWith("vizzu-debug"));
-      return debugCookie || this.hasAttribute("debug") || this.player.debug;
+      return debugCookie || this.hasAttribute("debug") || this.player?.debug || false;
     } catch (e) {
       return this.hasAttribute("debug");
     }
   }
 
-  log(...msg) {
+  log(...msg: any[]) {
     if (this.debug) {
       console.log(...LOG_PREFIX, ...msg);
     }
   }
 
   get Vizzu() {
-    return Vizzu;
+    return VizzuElement;
   }
 
   get hashNavigation() {
     return this.hasAttribute("hash-navigation");
   }
 
-  get vizzuUrl() {
-    if (window.Vizzu) return undefined;
+  get vizzuUrl(): string | undefined {
+    if ("Vizzu" in window) return undefined;
     return (
       this.getAttribute("vizzu-url") ||
       "https://cdn.jsdelivr.net/npm/vizzu@0.8/dist/vizzu.min.js"
@@ -78,18 +140,19 @@ class VizzuPlayer extends HTMLElement {
 
   async _initVizzu() {
     if (!this.vizzu) {
-      Vizzu = window.Vizzu || (await import(this.vizzuUrl)).default;
-      this._resolveVizzu(Vizzu);
-      this.vizzu = new Vizzu(this.vizzuCanvas);
+      VizzuElement = "Vizzu" in window ? window.Vizzu as Vizzu : this.vizzuUrl && (await import(this.vizzuUrl)).default;
+
+      if (!VizzuElement) {
+        throw new Error("Vizzu not found");
+      }
+     // this._resolveVizzu(VizzuElement);
+      this.vizzu = new VizzuElement(this.vizzuCanvas);
     }
   }
 
-  _slideToAnimparams(slide) {
-    if (slide._id) {
-      return slide._id;
-    }
+  _slideToAnimparams(slide:Phase) {
 
-    const animTarget = {};
+    const animTarget:animData = {};
     if (slide.config) {
       animTarget.config = slide.config;
     }
@@ -106,7 +169,7 @@ class VizzuPlayer extends HTMLElement {
       animTarget.data.filter = slide.filter;
     }
 
-    const animParams = { target: animTarget };
+    const animParams:animTargetData = { target: animTarget };
     if (slide.animOptions) {
       animParams.options = slide.animOptions;
     }
@@ -114,7 +177,7 @@ class VizzuPlayer extends HTMLElement {
     return animParams;
   }
 
-  async _convertSlides(slides) {
+  async _convertSlides(slides:Story) {
     if (slides?.slides?.length) {
       if (!Array.isArray(slides.slides[0])) {
         slides.slides[0] = [slides.slides[0]];
@@ -125,13 +188,12 @@ class VizzuPlayer extends HTMLElement {
     }
 
     await this.initializing;
-    this.vizzu.on("animation-complete", () => {
-      this._update(this._state);
+    this.vizzu?.on("animation-complete", () => {
+      this._update();
     });
     this.animationQueue = new AnimationQueue(this.vizzu);
-    console.log(this.animationQueue.constructor.name)
-
-    if (typeof this.vizzu._setStyle === "function") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (typeof this.vizzu?._setStyle === "function") {
       // workaround
       if (!slides.style) {
         slides.style = {};
@@ -153,14 +215,15 @@ class VizzuPlayer extends HTMLElement {
         steps = [steps];
       }
 
-      const chartSteps =
+      const chartSteps:(Anim.Keyframe | undefined)[] =
         convertedSlides.length > 0 ? [convertedSlides?.at(-1)?.at(-1)] : [];
+
       const animParams = steps.map((step) => this._slideToAnimparams(step));
 
       for (const animParam of animParams) {
         const anim = this.vizzu.animate(animParam.target);
         await anim;
-        const targetData = {
+        const targetData:animTargetData = {
           target: {
             config: this.vizzu.config,
             style: this.vizzu.getComputedStyle(),
@@ -177,7 +240,7 @@ class VizzuPlayer extends HTMLElement {
           targetData.target.data = { filter: animParam.target.data.filter };
           lastFilter = animParam.target.data.filter;
         } else if (targetData.target.filter) {
-          targetData.target.data = { filter: animParam.target.data.filter };
+          targetData.target.data = { filter: animParam.target.filter };
         } else if (lastFilter) {
           targetData.target.data = { filter: lastFilter };
         }
@@ -186,7 +249,7 @@ class VizzuPlayer extends HTMLElement {
       }
       convertedSlides.push(chartSteps);
     }
-    if (convertedSlides.length) {
+    if (convertedSlides.length > 0) {
       await this.vizzu.animate(convertedSlides[this._currentSlide || 0]);
     }
     this.vizzu.off("animation-begin", seekToEnd);
@@ -194,20 +257,20 @@ class VizzuPlayer extends HTMLElement {
     return convertedSlides;
   }
 
-  _slideFromHash(length) {
+  _slideFromHash(length: number): number {
     const hashSlide = parseInt(document.location.hash.substring(1));
 
     return this._normalizeSlideNumber(hashSlide, length);
   }
 
-  _getStartSlide(length) {
-    const startSlide = parseInt(this.getAttribute("start-slide")) || 0;
+  _getStartSlide(length: number):number {
+    const startSlide = parseInt(this.getAttribute("start-slide")|| "0") || 0;
 
     return this._normalizeSlideNumber(startSlide, length);
   }
 
-  _normalizeSlideNumber(nr, length) {
-    if (isNaN(nr)) return null;
+  _normalizeSlideNumber(nr:number, length:number) {
+    if (isNaN(nr)) return 0;
     if (!nr) return 0;
     return nr < 0 ? Math.max(length + nr, 0) : Math.min(nr - 1, length - 1);
   }
@@ -216,8 +279,8 @@ class VizzuPlayer extends HTMLElement {
     return this._slides;
   }
 
-  set slides(slidesSourceData) {
-    const slides = this._recursiveCopy(slidesSourceData);
+  set slides(slidesSourceData:Story) {
+    const slides:Story = this._recursiveCopy(slidesSourceData);
     let startSlide = this._getStartSlide(slides.slides.length);
     if (this.hashNavigation) {
       const hashSlide = this._slideFromHash(slides.slides.length);
@@ -246,7 +309,7 @@ class VizzuPlayer extends HTMLElement {
     return clone;
   }
 
-  async _setSlides(slides) {
+  async _setSlides(slides:Story) {
     this.setAttribute("initializing", "");
     this._originalSlides = slides;
     this._slides = await this._convertSlides(slides);
@@ -279,13 +342,13 @@ class VizzuPlayer extends HTMLElement {
     return this.hasAttribute("controller");
   }
 
-  _step(step, options = {}) {
+  _step(step:Anim.Keyframe[], options = {}) {
     this.animationQueue.enqueue(step, options, {
       currentSlide: this._currentSlide,
     });
   }
 
-  async _seekTo(percent) {
+  async _seekTo(percent:number) {
     this.vizzu.animation.seek(`${percent}%`);
   }
 
@@ -313,7 +376,7 @@ class VizzuPlayer extends HTMLElement {
     return this._animationQueue;
   }
 
-  async setSlide(slide) {
+  async setSlide(slide:number) {
     if (this.length === 0) {
       return;
     }
@@ -328,7 +391,7 @@ class VizzuPlayer extends HTMLElement {
       return;
     }
 
-    this._update(this._state);
+    this._update();
 
     const actualSlideKey = this._currentSlide || 0;
     if (!slide || slide < 0) {
@@ -347,7 +410,6 @@ class VizzuPlayer extends HTMLElement {
         this.lastAnimation = currentSlide;
       }
     } else if (actualSlideKey - slide === -1) {
-
       const ns = this._slides[slide];
       this._step(ns);
       this.lastAnimation = ns;
@@ -359,7 +421,7 @@ class VizzuPlayer extends HTMLElement {
       this.lastAnimation = targetSlide;
     }
 
-    this._update(this._state);
+    this._update();
 
     if (this.hashNavigation) {
       document.location.hash = `#${slide + 1}`;
@@ -382,13 +444,13 @@ class VizzuPlayer extends HTMLElement {
     return this.setSlide(this.length - 1);
   }
 
-  async seek(percent) {
-    this._update(this._state);
+  async seek(percent:number) {
+    this._update();
     this.log(
       `seek to ${percent}%, current: ${this._seekPosition}% [${this._currentSlide}]`
     );
     this.vizzu.animation.seek(`${percent}%`);
-    this._update(this._state);
+    this._update();
   }
 
   get _state() {
@@ -400,8 +462,8 @@ class VizzuPlayer extends HTMLElement {
     };
   }
 
-  _update(state) {
-    const e = new CustomEvent("update", { detail: state });
+  _update() {
+    const e = new CustomEvent("update", { detail: this._state });
     this.dispatchEvent(e);
   }
 
@@ -409,7 +471,7 @@ class VizzuPlayer extends HTMLElement {
     return this.getAttribute("custom-spinner");
   }
 
-  _render() {
+  private _render() {
     return `
       <style>
         :host {
@@ -514,4 +576,4 @@ try {
 }
 
 export default VizzuPlayer;
-export { VizzuController };
+//export { VizzuController: };
