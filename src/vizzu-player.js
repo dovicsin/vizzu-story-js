@@ -10,24 +10,30 @@ const LOG_PREFIX = [
 let Vizzu;
 
 class VizzuPlayer extends HTMLElement {
+
+  loading = true;
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
     this.shadowRoot.innerHTML = this._render();
-
-    this._resolveVizzu = null;
-    this.initializing = new Promise((resolve) => {
+    
+    //this._resolveVizzu = null;
+/*      this.initializing = new Promise((resolve) => {
       this._resolveVizzu = resolve;
-    }).then(() => this.vizzu.initializing);
-
+    }).then(() => this.vizzu.initializing);  */
+/* 
     this._resolvePlayer = null;
     this.ready = new Promise((resolve) => {
       this._resolvePlayer = resolve;
-    });
+    }); */
   }
 
   async connectedCallback() {
-    await this._initVizzu();
+    this.initializing = new Promise(async (resolve) => {
+      await this._initVizzu();
+      await this.vizzu.initializing;
+      resolve(this.vizzu);
+    })
     if (!this.hasAttribute("tabindex")) {
       this.setAttribute("tabindex", 0);
       this.tabIndex = 0;
@@ -79,7 +85,7 @@ class VizzuPlayer extends HTMLElement {
   async _initVizzu() {
     if (!this.vizzu) {
       Vizzu = window.Vizzu || (await import(this.vizzuUrl)).default;
-      this._resolveVizzu(Vizzu);
+      //this._resolveVizzu(Vizzu);
       this.vizzu = new Vizzu(this.vizzuCanvas);
     }
   }
@@ -215,8 +221,8 @@ class VizzuPlayer extends HTMLElement {
   get slides() {
     return this._slides;
   }
-
-  set slides(slidesSourceData) {
+  async _setSlidesWithData(slidesSourceData) {
+    await this.initializing;
     const slides = this._recursiveCopy(slidesSourceData);
     let startSlide = this._getStartSlide(slides.slides.length);
     if (this.hashNavigation) {
@@ -227,6 +233,10 @@ class VizzuPlayer extends HTMLElement {
     }
     this._currentSlide = startSlide;
     this._setSlides(slides);
+  }
+
+  set slides(slidesSourceData) {
+    this._setSlidesWithData(slidesSourceData)
   }
 
   _recursiveCopy(obj) {
@@ -252,7 +262,7 @@ class VizzuPlayer extends HTMLElement {
     this._slides = await this._convertSlides(slides);
     this.setSlide(this._currentSlide);
     this.removeAttribute("initializing");
-    this._resolvePlayer();
+    //this._resolvePlayer();
   }
 
   get vizzuCanvas() {

@@ -80,16 +80,10 @@ class VizzuPlayer extends HTMLElement {
     }); */
   }
   
-  async connectedCallback() {
-    let resolveInit: ((value: boolean | PromiseLike<boolean>) => void) | null = null;
-    
-    this.initializing = new Promise<boolean>((resolve) => {
-      resolveInit = resolve;
-    });
-
+  async connectedCallback() { 
     await this._initVizzu();
     await this.vizzu?.initializing;
-    resolveInit!(true);
+    this.loading = false;
     if (!this.hasAttribute("tabindex")) {
       this.setAttribute("tabindex", "0");
       this.tabIndex = 0;

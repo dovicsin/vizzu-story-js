@@ -127,10 +127,10 @@ const vpd = {
 };
 
 const vp = document.querySelector("vizzu-player");
-vp.initializing.then((chart) => {
+vp.initializing.then(() => {
   vp.slides = vpd; // init slides
-  chart.on("plot-axis-label-draw", labelHandler);
-  chart.feature("tooltip", true);
+  vp.vizzu.on("plot-axis-label-draw", labelHandler);
+  vp.vizzu.feature("tooltip", true);
 });
 
 /*
